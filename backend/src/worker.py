@@ -1,7 +1,7 @@
 import logging
 import time
 from pathlib import Path
-from src.services.execution import claim, execute, materialize_due
+from src.services.execution import claim, claim_glossary, execute, execute_glossary, materialize_due
 from src.utils.wakeup import wait
 
 logging.basicConfig(level=logging.INFO)
@@ -14,9 +14,13 @@ def main():
         try:
             materialize_due()
             lease = claim()
+            glossary_lease = None if lease else claim_glossary()
             heartbeat.touch()
             if lease:
                 execute(lease)
+                heartbeat.touch()
+            elif glossary_lease:
+                execute_glossary(glossary_lease)
                 heartbeat.touch()
             else:
                 wait()

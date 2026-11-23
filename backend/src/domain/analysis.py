@@ -96,6 +96,33 @@ class _Model:
         )
 
 
+@dataclass(frozen=True)
+class Estimation:
+    """The selected model together with the chronological splits behind it."""
+    params: dict
+    history: list
+    pending: list
+    training: list
+    selection: list
+    holdout: list
+    scores: list
+    model: _Model
+
+
+def estimate(rows, normalized_params):
+    """Validate rows, select features and penalty, and refit on training plus selection."""
+    from src.services.validation import normalize_params
+
+    ordered = sorted(validate_rows(rows), key=lambda row: (row["job_date"], row["job_id"]))
+    params = normalize_params(normalized_params)
+    history = [row for row in ordered if row["actual_minutes"] is not None]
+    pending = [row for row in ordered if row["actual_minutes"] is None]
+    training, selection, holdout = _split(history, params["selection_start"], params["holdout_start"])
+    scores = _candidates(training, selection, params["ridge_penalty"])
+    model = _fit(training + selection, scores[0][3], scores[0][4])
+    return Estimation(params, history, pending, training, selection, holdout, scores, model)
+
+
 def _fit(rows, features, penalty):
     columns = [[row[key] for row in rows] for key in features]
     means = [fmean(column) for column in columns]
@@ -164,19 +191,15 @@ def _table(title, columns, rows):
 
 
 def analyze(rows, normalized_params):
-    from src.services.validation import normalize_params
-
-    ordered = sorted(validate_rows(rows), key=lambda row: (row["job_date"], row["job_id"]))
-    params = normalize_params(normalized_params)
-    history = [row for row in ordered if row["actual_minutes"] is not None]
-    pending = [row for row in ordered if row["actual_minutes"] is None]
-    training, selection, holdout = _split(history, params["selection_start"], params["holdout_start"])
-    scores = _candidates(training, selection, params["ridge_penalty"])
-    selection_mae, _, group, features, penalty = scores[0]
-    model = _fit(training + selection, features, penalty)
+    estimation = estimate(rows, normalized_params)
+    params = estimation.params
+    model = estimation.model
+    training, selection, holdout = estimation.training, estimation.selection, estimation.holdout
+    scores = estimation.scores
+    selection_mae, _, group, _, penalty = scores[0]
     mae, rmse, bias = _errors(model, holdout)
     baseline = fmean(abs(row["actual_minutes"] - model.intercept) for row in holdout)
-    queue = _pending_estimates(model, pending, history[-1]["job_date"], params["flag_minutes"])
+    queue = _pending_estimates(model, estimation.pending, estimation.history[-1]["job_date"], params["flag_minutes"])
     flagged = sum(row["flagged"] == "需核排" for row in queue)
 
     comparison = [
@@ -192,11 +215,11 @@ def analyze(rows, normalized_params):
     ]
     evaluated = []
     for row in holdout:
-        estimate = max(0.0, model.predict(row))
+        projected = max(0.0, model.predict(row))
         evaluated.append({
             "job_id": row["job_id"], "job_date": row["job_date"], "title": row["title"],
-            "estimated_minutes": round(estimate, 2), "actual_minutes": row["actual_minutes"],
-            "error": round(estimate - row["actual_minutes"], 2),
+            "estimated_minutes": round(projected, 2), "actual_minutes": row["actual_minutes"],
+            "error": round(projected - row["actual_minutes"], 2),
         })
     stages = [
         {"stage": stage, "first": subset[0]["job_date"], "last": subset[-1]["job_date"], "count": len(subset)}

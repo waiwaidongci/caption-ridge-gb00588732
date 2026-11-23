@@ -3,11 +3,14 @@ from datetime import date, timedelta
 from sqlalchemy import and_, or_, select
 from src.config.database import Session
 from src.constants.enums import Status
-from src.domain.analysis import analyze
+from src.domain.analysis import analyze, estimate
+from src.domain.glossary import plan_glossary
 from src.domain.spec import SPEC
+from src.models.glossary import GlossaryPlan, GlossaryState
 from src.models.jobs import Delivery, Run, Schedule
 from src.models.source import Dataset
 from src.services.audit import record
+from src.services.glossary import snapshot_terms
 from src.utils.exports import write_report
 from src.utils.time import now
 
@@ -90,3 +93,61 @@ def execute(lease):
             receipt = Delivery(run_id=job.id, recipient=plan.recipient, state='delivered' if ready else 'blocked', detail=detail[:500])
             db.add(receipt)
             record(db, 'worker', f'delivery.{receipt.state}', job.id, recipient=plan.recipient)
+
+
+def claim_glossary():
+    stamp = now()
+    with Session.begin() as db:
+        query = select(GlossaryPlan).where(or_(GlossaryPlan.status == Status.QUEUED,
+                                               and_(GlossaryPlan.status == Status.RUNNING,
+                                                    GlossaryPlan.lease_until < stamp)))
+        job = db.scalar(query.order_by(GlossaryPlan.id).limit(1).with_for_update(skip_locked=True))
+        if job is None:
+            return None
+        if job.attempt >= 3:
+            job.status = Status.FAILED
+            job.error = '后台进程多次中断，请发起新的计算'
+            job.finished_at = stamp
+            record(db, 'worker', 'glossary.failed', job.id, reason=job.error)
+            return None
+        job.status = Status.RUNNING
+        job.attempt += 1
+        job.lease_until = stamp + timedelta(minutes=3)
+        # Snapshot the glossary version under its row lock so the terms read below
+        # are exactly the state this plan will be validated against at publish time.
+        state = db.get(GlossaryState, 1, with_for_update=True)
+        job.input_version = state.version if state else 0
+        terms = snapshot_terms(db)
+        run = db.get(Run, job.run_id)
+        records = db.get(Dataset, run.dataset_id).rows
+        return job.id, job.attempt, run.name, run.params, records, terms, float(job.budget)
+
+
+def execute_glossary(lease):
+    job_id, attempt, run_name, params, rows, terms, budget = lease
+    result = failure = None
+    try:
+        result = plan_glossary(estimate(rows, params), terms, budget, f'运行「{run_name}」')
+    except ValueError as error:
+        failure = str(error)[:500]
+    except Exception:
+        log.exception('Glossary plan %s failed', job_id)
+        failure = '计算失败，请检查术语与覆盖范围后重试'
+    with Session.begin() as db:
+        job = db.get(GlossaryPlan, job_id, with_for_update=True)
+        if job.attempt != attempt or job.status != Status.RUNNING:
+            return
+        state = db.get(GlossaryState, 1, with_for_update=True)
+        version = state.version if state else 0
+        job.lease_until = None
+        job.finished_at = now()
+        if version != job.input_version:
+            # Coverage moved on while computing: never publish the stale result.
+            job.status = Status.STALE
+            job.result = None
+            job.error = '术语或覆盖范围已更新，本次结果未发布，请重新计算'
+        else:
+            job.status = Status.FAILED if failure else Status.COMPLETE
+            job.result = None if failure else result
+            job.error = failure
+        record(db, 'worker', f'glossary.{job.status}', job.id, attempt=attempt, reason=job.error)

@@ -28,3 +28,17 @@ class ScheduleRequest(RunRequest):
     recipient: str = Field(min_length=1, max_length=100)
     first_at: datetime
     repeat_daily: bool = False
+
+class TermRequest(Request):
+    term: str = Field(min_length=1, max_length=120)
+    cost: float = Field(gt=0, le=100000)
+    coverage_text: str = Field(min_length=1, max_length=20000)
+
+class TermUpdateRequest(Request):
+    term: str | None = Field(default=None, min_length=1, max_length=120)
+    cost: float | None = Field(default=None, gt=0, le=100000)
+    coverage_text: str | None = Field(default=None, min_length=1, max_length=20000)
+
+class GlossaryPlanRequest(Request):
+    run_id: int = Field(gt=0)
+    budget: float = Field(gt=0, le=1_000_000)

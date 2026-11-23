@@ -1,3 +1,4 @@
+from src.domain.glossary import serialize_coverage
 from src.utils.time import iso
 
 
@@ -27,3 +28,18 @@ def schedule(item):
 def delivery(item):
     return {'id': item.id, 'run_id': item.run_id, 'recipient': item.recipient,
             'state': item.state, 'detail': item.detail, 'created_at': iso(item.created_at)}
+
+
+def term(item):
+    return {'id': item.id, 'term': item.term, 'cost': item.cost, 'coverage': item.coverage,
+            'coverage_text': serialize_coverage(item.coverage), 'positions': len(item.coverage),
+            'author': item.author, 'updated_at': iso(item.updated_at)}
+
+
+def glossary_plan(item, detail=False):
+    plan = {'id': item.id, 'run_id': item.run_id, 'budget': item.budget, 'status': item.status,
+            'input_version': item.input_version, 'author': item.author,
+            'created_at': iso(item.created_at), 'finished_at': iso(item.finished_at), 'error': item.error}
+    if detail:
+        plan['result'] = item.result
+    return plan

@@ -18,5 +18,10 @@ export const workspace = {
   deliveries: () => call('/deliveries'),
   schedule: data => call('/schedules', data),
   disable: id => call(`/schedules/${id}/disable`, {}),
+  glossaryTerms: () => call('/glossary/terms'),
+  saveTerm: (id, data) => call(id ? `/glossary/terms/${id}` : '/glossary/terms', data),
+  glossaryPlans: () => call('/glossary/plans'),
+  glossaryPlan: id => call(`/glossary/plans/${id}`),
+  startGlossary: data => call('/glossary/plans', data),
   download: (path, filename) => saveFile(path, session.token, filename),
 };
